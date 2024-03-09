@@ -36,7 +36,7 @@ func main() {
 	app := &cli.App{
 		Name:     "gofwd",
 		Usage:    "gofwd <https://github.com/davexpro/gofwd>",
-		Version:  "v0.1.1",
+		Version:  "v0.1.2",
 		Writer:   os.Stdout,
 		Flags:    nil,
 		Commands: commands,
