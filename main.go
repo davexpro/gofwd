@@ -35,8 +35,8 @@ const (
 func main() {
 	app := &cli.App{
 		Name:     "gofwd",
-		Usage:    "gofwd <https://github.com/DavexPro/gofwd>",
-		Version:  "v0.1.0",
+		Usage:    "gofwd <https://github.com/davexpro/gofwd>",
+		Version:  "v0.1.1",
 		Writer:   os.Stdout,
 		Flags:    nil,
 		Commands: commands,
@@ -51,4 +51,13 @@ func version(c *cli.Context) error {
 	fmt.Println("date", date)
 	fmt.Println("magic", magic)
 	return nil
+}
+
+func fwdUDP(c *cli.Context) error {
+	f := NewUDPFwd(c.String("listen"), c.String("target"), time.Minute*5, c.Bool("verbose"))
+	if err := f.prepare(); err != nil {
+		log.Println("failed to prepare:", err)
+		return err
+	}
+	return f.run()
 }
