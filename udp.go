@@ -33,15 +33,6 @@ var (
 	}
 )
 
-func fwdUDP(c *cli.Context) error {
-	f := NewUDPFwd(c.String("listen"), c.String("target"), time.Minute*5, c.Bool("verbose"))
-	if err := f.prepare(); err != nil {
-		log.Println("failed to prepare:", err)
-		return err
-	}
-	return f.run()
-}
-
 type UDPForward struct {
 	from, to string
 	fromAddr *net.UDPAddr
@@ -129,7 +120,7 @@ func (f *UDPForward) forward() {
 			log.Println("forward: failed to read, terminating:", err)
 			return
 		}
-		go f.handle(buf[:n], addr)
+		go f.handleConn(buf[:n], addr)
 	}
 }
 
@@ -151,38 +142,34 @@ func (f *UDPForward) recycle() {
 	}
 }
 
-func (f *UDPForward) handle(data []byte, addr *net.UDPAddr) {
-	raw, loaded := connHub.LoadOrStore(addr.String(), &conn{accessTime: time.Now().Unix()})
+func (f *UDPForward) handleConn(data []byte, fromAddr *net.UDPAddr) {
+	raw, loaded := connHub.LoadOrStore(fromAddr.String(), &conn{accessTime: time.Now().Unix()})
 	c := raw.(*conn)
 
 	if !loaded {
-		log.Println("recv conn from:", addr.String(), "to", f.to)
+		log.Println("recv conn from:", fromAddr.String(), "to", f.to)
 	}
 
-	toAddrRaw, err := dnsCache.Get(f.to)
+	toAddr, err := resolveUDPAddress(f.to)
 	if err != nil {
-		log.Println("failed to get dns cache:", err)
+		log.Println("gofwd: failed to resolve:", err)
+		connHub.Delete(fromAddr.String())
+		return
 	}
 
-	if c.udp != nil && toAddrRaw != nil {
-		if c.udp.RemoteAddr().String() != toAddrRaw.(string) {
-			log.Println("gofwd: remote addr changed, closing:", c.udp.RemoteAddr().String(), toAddrRaw.(string))
+	if c.udp != nil && toAddr != nil {
+		if c.udp.RemoteAddr().String() != toAddr.String() {
+			log.Println("gofwd: remote fromAddr changed, closing:", c.udp.RemoteAddr().String(), toAddr.String())
 			c.udp.Close()
 			c.udp = nil
 		}
 	}
 
 	if c.udp == nil {
-		toAddr, err := resolveUDPAddress(f.to)
-		if err != nil {
-			log.Println("gofwd: failed to resolve:", err)
-			connHub.Delete(addr.String())
-			return
-		}
 		udpConn, err := net.DialUDP("udp", nil, toAddr)
 		if err != nil {
 			log.Println("gofwd: failed to dial:", err)
-			connHub.Delete(addr.String())
+			connHub.Delete(fromAddr.String())
 			return
 		}
 
@@ -195,12 +182,11 @@ func (f *UDPForward) handle(data []byte, addr *net.UDPAddr) {
 
 		for {
 			// log.Println("in loop to read from NAT conn to servers")
-			buf := make([]byte, bufferSize)
-			oob := make([]byte, bufferSize)
+			buf, oob := make([]byte, bufferSize), make([]byte, bufferSize)
 			n, _, _, _, err := udpConn.ReadMsgUDP(buf, oob)
 			if err != nil {
 				udpConn.Close()
-				connHub.Delete(addr.String())
+				connHub.Delete(fromAddr.String())
 				if !errors.Is(err, net.ErrClosed) {
 					log.Println("gofwd: abnormal read, closing:", err)
 				}
@@ -208,9 +194,9 @@ func (f *UDPForward) handle(data []byte, addr *net.UDPAddr) {
 			}
 
 			if f.verbose {
-				log.Println(addr.String(), "sent packet to client", n)
+				log.Println("->", "size", n, "from", fromAddr.String(), "to", udpConn.RemoteAddr())
 			}
-			_, _, err = f.listener.WriteMsgUDP(buf[:n], nil, addr)
+			_, _, err = f.listener.WriteMsgUDP(buf[:n], nil, fromAddr)
 			if err != nil {
 				log.Println("gofwd: error sending packet to client:", err)
 			}
@@ -218,7 +204,7 @@ func (f *UDPForward) handle(data []byte, addr *net.UDPAddr) {
 	}
 
 	if f.verbose {
-		log.Println("sent packet to server", c.udp.RemoteAddr(), len(data))
+		log.Println("<-", "size", len(data), "from", c.udp.RemoteAddr(), "to", fromAddr.String())
 	}
 	_, _, err = c.udp.WriteMsgUDP(data, nil, nil)
 	if err != nil {
